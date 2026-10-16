@@ -5,12 +5,11 @@ the constraints that should guide implementation decisions. `TODOS.md` is the
 execution backlog; every backlog item must reference an intent ID from this
 document.
 
-The project is a Rust + egui reimagining of the desktop workspace in
-`../dart-flutter-chainnotes` (Flutter). The port changes the technology and
-narrows the scope, not the product shape: notes, an editor, and chains over
-one persisted record. The Flutter original's other tools — TOC Manager, PDF
-Reader, Image Viewer, Map Explorer — are deliberately out of scope for this
-iteration; see I4.4.
+The project is a small desktop workspace for notes that link to each
+other: notes, an editor, and chains over one persisted record. Heavier
+tools — a TOC manager, a PDF reader, an image viewer, a map explorer —
+were considered and are deliberately out of scope for this iteration; see
+I4.4.
 
 ## How to use this pyramid
 
@@ -163,87 +162,124 @@ changeable independently behind small contracts.
 
 ### I4.4 — Defer the heavy tools and web by decision
 
-PDF reading, image viewing, and map exploration from the Flutter original
-are out of scope for this iteration; so is WebAssembly compilation. Building
-any of them here is a product decision, not an oversight, and would need new
-intents before new code. Recorded as decisions, not omissions — see
-TODOS TODO-013 and TODO-014.
+PDF reading, image viewing, and map exploration are out of scope for this
+iteration; so is WebAssembly compilation. Building any of them here is a
+product decision, not an oversight, and would need new intents before new
+code. Recorded as decisions, not omissions — see TODOS TODO-013 and
+TODO-014.
 
 ## Current state snapshot
 
-Verified against the tree rather than against these entries, on 2026-10-15
+Verified against the tree rather than against these entries, on 2026-10-16
 with rustc 1.98.1 and eframe/egui 0.36.2 — `cargo build` clean,
-`cargo clippy` clean (one `useless_format` warning found and fixed). Every
-claim below was checked by reading the tree and building it on that date.
+`cargo clippy --all-targets` clean, `cargo test` 52/52 passing. Every claim
+below was checked by running it on that date.
 
 Already present and working:
 
 - A runnable eframe window (1000×700, min 640×480) with a top menu bar
-  (File: New note / Quit; Help: About), a bottom status bar, a left note
-  list with live search, a central title+body editor, and a right chains
-  panel — **I1.1**.
-- The `Note` model (`src/note.rs`): id, title, body, directed `links`
-  (outgoing edge ids), `created_at`/`updated_at`, `touch()` on edit, and a
-  relative-time formatter — **I1.4**.
-- Link management from the editor toolbar: a "Link…" popup toggles edges to
-  other notes; the chains panel shows outgoing links and derived backlinks
-  and navigates on click — **I1.4**, **I2.1**.
-- Note create/delete with dangling-link cleanup (deleting a note strips its
-  id from every other note's links) — **I1.4**, **I3.2**.
-- 361 lines across 3 source files; the only external crates are eframe and
-  egui.
+  (File: New note / Undo delete / Quit; Help: About), a bottom status bar
+  with a save-mode label, a left note list with live search, a central
+  title+body editor, and a right chains panel — **I1.1**.
+- **Persistence** through one seam: `WorkspaceStore` (`src/store.rs`) owns
+  the only filesystem path (`dirs::data_dir()/chainnotes/workspace.json`),
+  checks a 4 MiB cap before reading, writes atomically (temp + rename), and
+  applies the boot merge (`store::merge`: durable wins unless strictly
+  older than the in-memory snapshot). `AutoSaver` (`src/autosave.rs`)
+  debounces at 250 ms and `on_exit` flushes a pending write instead of
+  dropping it. A first run starts the demo marked dirty, so the boot
+  debounce writes the file instead of leaving the status bar claiming
+  "Saved to disk" for a file that does not exist — **I1.3**, **I3.4**,
+  **I2.1**, **I2.3**.
+- **Bounded failures**: `StoreError` (TooLarge / Corrupt / Io /
+  WriteFailed / RenameFailed) maps every failure to a distinct sentence via
+  `messages.rs`; a corrupt or oversized file degrades to a readable status
+  line, never a panic; no user-data path calls `unwrap` — **I3.2**,
+  **I2.2**.
+- The widget-free core: `state.rs` (the `ChainNotes` record), `graph.rs`
+  (link-graph queries and invariants), `history.rs` (the undo slot),
+  `autosave.rs` (debounce/flush), `store.rs`, `command.rs`,
+  `messages.rs`, `note.rs` — **I1.2**.
+- **One write path**: every record mutation enters through
+  `ChainNotesApp::handle(Command)` (`src/app.rs`); panels and menus emit
+  `Command`s (`src/command.rs`) rather than mutating state directly, so a
+  future shortcut or toolbar reuses every mutation — **I1.2**, **I4.3**.
+- **Undo delete**: a one-deep slot (`src/history.rs`) restores the deleted
+  note *and* every incoming edge at its original position — **I2.1**.
+- The `Note` model: id, title, body, directed `links`, `created_at`/
+  `updated_at`, `touch()` on edit, relative-time formatting — **I1.4**.
+- 52 tests across eight modules (note 4, graph 5, history 3, state 12,
+  store 12, autosave 6, app 8, messages 2): id allocation, delete
+  stripping both edge directions, undo + edge-position restore, search,
+  record round-trip, corrupt/empty/over-cap loads, atomic-write failure
+  leaving the previous file intact, error-sentence distinctness, the merge
+  tiebreak, the boot wiring that restores a previously saved record, the
+  save-mode truthfulness of first-run / loaded / corrupt boots, the
+  debounce/flush controller, and the command write path — **I4.1**,
+  **I2.3**.
+- Fourteen source files (ten in `src/` plus the four in `src/ui/`), every
+  one under 300 production lines — **I0.1**.
 
 Known gaps, in the order they should be closed (the full backlog with
 definitions of done lives in `TODOS.md`):
 
-- **Persistence does not exist.** Nothing reaches disk; a restart loses every
-  note — **I1.3**, **I2.1**. TODO-001.
-- **No automated tests.** The model, the link graph, and the app logic have
-  zero coverage — **I4.1**. TODO-002.
 - **No graph view.** Chains are lists, not a visual graph — **I1.4**
   (deferred by I4.4). TODO-003.
-- **No import/export.** A workspace cannot be moved between machines —
-  **I1.1**, **I2.2**. TODO-004.
-- **Corrupt-file handling unproven.** The store does not exist yet, so its
-  failure story is unverified — **I3.2**, **I2.2**. TODO-005.
-- **No undo for delete.** A mis-click loses a note with no recovery —
-  **I2.1**, **I2.2**. TODO-006.
-- **No keyboard shortcuts.** New/delete/search are mouse-only — **I2.4**.
+- **No import/export.** A workspace cannot be moved between machines by
+  file yet — **I1.1**, **I2.2**. TODO-004.
+- **No keyboard shortcuts.** New/delete/save are mouse-only — **I2.4**.
   TODO-007.
+- **CI and README refresh.** A workflow and a docs pass to keep every
+  claim checkable — **I4.1**, **I1.5**. TODO-009, TODO-010.
 
 ## Appendix — how the app is shaped: input → process → output
 
-Every tool follows one pipeline: a gesture in a view, a decision in the app
-state, a write through the single record, and a visible confirmation.
-Nothing reaches disk except through the store, and nothing reaches the
-filesystem except through that one seam (once TODO-001 lands).
+Every tool follows one pipeline: a gesture in a view, a `Command` through
+the single write path (`handle`), a decision in the app state, a write
+through the single record, and a visible confirmation. Nothing reaches
+disk except through the store, and nothing reaches the filesystem except
+through that one seam.
 
 | Tool | Input (gesture) | Process (where the decision lives) | Output (record + visible feedback) |
 | --- | --- | --- | --- |
-| Notes | "＋ New" button; Delete button; search keystroke; list-row click | `ChainNotesApp::add_note` / `delete_note` allocate the id, strip dangling links, set the selection and the status sentence; `visible_notes` filters by case-insensitive title+body substring | `notes` vec + `selected` + status line; sidebar rows and count |
-| Editor | Title/body `TextEdit` change; "Link…" popup click | `Note::touch` stamps `updated_at`; the popup toggles an edge in `links` (add or remove) | `notes[i].title/body/links`; status line "Edited note #N" |
-| Chains | Outgoing/backlink row click | Selecting a row sets `selected` to the target id | `selected`; the editor switches to that note |
+| Notes | "＋ New" button; Delete button; search keystroke; list-row click | Panels emit `Command::NewNote` / `DeleteSelected` / `SelectNote`; `handle()` calls `ChainNotes::add_note` / `delete_note` (which allocate the id, strip dangling links via `graph`, set the selection and the status sentence); `visible_notes` filters by case-insensitive title+body substring | `notes` vec + `selected` + status line; sidebar rows and count |
+| Editor | Title/body `TextEdit` change; "Link…" popup click | `TextEdit` binds the fields directly; a change emits `Command::NoteEdited` (stamps `updated_at`); the popup emits `Command::ToggleLink` to add or remove an edge | `notes[i].title/body/links`; status line "Edited note #N" |
+| Chains | Outgoing/backlink row click | Emits `Command::SelectNote` with the target id | `selected`; the editor switches to that note |
 
 Global flows:
 
 ```text
 boot:    main() → NativeOptions (viewport, title) → run_native
-         → ChainNotesApp::new (seeds two demo notes) → first ui() pass
-         output: status "Ready"; persistence not yet wired (TODO-001)
+         → ChainNotesApp::new → WorkspaceStore::load
+            Ok(Some) → merge(boot_default, durable) → "Loaded N notes."
+            Ok(None) → demo record → "New workspace — no file yet."
+                       marked dirty → first debounce writes the file
+            Err(e)   → demo record → e.sentence() (corrupt/over-cap/unreadable)
+                       not dirty → the unreadable file is left on disk
+         output: save mode = Saved (loaded file), Dirty (first run, until
+                 the boot flush lands), or None (load error: disk does not
+                 match memory)
 
-keystroke: view → TextEdit::changed() → notes[i].touch()
-           → status "Edited note #N"
-           output: in-memory only until the store exists (TODO-001)
+keystroke: view → TextEdit::changed() → Command::NoteEdited
+           → handle() → state.touch_selected() → saver.touch()
+           → 250 ms debounce → saver.flush()
+           → store.save (temp + rename) → SaveMode::Saved | Failed
+           output: status sentence kept; save-mode label in the status bar
 
-shutdown: eframe drops the app; no flush exists yet (TODO-001)
-          output: edits since boot are lost
+shutdown: on_exit → saver.flush() (a pending write is flushed, not
+          dropped); Quit menu runs handle(Command::Quit) which also flushes
+          before ViewportCommand::Close
+          output: the last edit survives a window close
 ```
 
-**One thing this snapshot exists to prevent.** The Flutter original's pyramid
-carries a warning that a "current state" section once claimed a restart
-restored work before the wiring that made it true existed. This snapshot
-holds the same line for the Rust port: it lists the two demo notes that
-`ChainNotesApp::new` seeds, the three source files that compile, and the
-absence of persistence, tests, and a graph — nothing more. A document
-describing intent can be aspirational; a document labelled *current state*
-cannot, and it is the label that makes people stop checking.
+**One thing this snapshot exists to prevent.** A "current state" section
+once claimed a restart restored work before the wiring that made it true
+existed — the claim was written from the intent's point of view, not the
+code's. This snapshot holds the line: it claims persistence only because
+`WorkspaceStore` exists, the boot path calls it, `on_exit` flushes it, and
+tests lock the round-trip, the merge rule, and the boot wiring itself
+(TODO-001 and TODO-002 are closed with that evidence in `TODOS.md`). It
+does not claim a graph view, import/export, shortcuts, or a CI run,
+because none of those exist. A document describing intent can be
+aspirational; a document labelled *current state* cannot, and it is the
+label that makes people stop checking.

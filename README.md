@@ -1,30 +1,12 @@
 # chainnotes
 
-**Chainnotes is a Rust + egui desktop workspace for outline-driven notes:
-three tools working over one shared record.**
+**Chainnotes is a small Rust + egui desktop app for taking notes that link
+to each other.** Three panes — a note list, an editor, and a chains panel —
+work over one shared record that is saved to a single JSON file.
 
-It is a Rust reimagining of the Flutter workspace in
-[`../dart-flutter-chainnotes`](https://github.com/naranyala/dart-flutter-chainnotes),
-narrowed to the essence: notes, an editor, and chains (links between notes).
-All correctness-critical logic — the note model, the link graph, and (once
-it lands) the atomic store and persistence merge — lives in widget-free
-modules with tests, while the egui views stay thin.
-
-In daily use, you create notes in the **Notes** list, draft in the **Editor**
-bound to the selected note, and link that note outward to other notes; the
-**Chains** panel shows both outgoing links and derived backlinks and jumps
-between them. Everything reads and writes a single record, so switching
-notes never loses your place.
-
-Chainnotes is built as a small, readable starter: one composition root, a
-short dependency list (`eframe`, `egui`), and documents that match the code
-that actually runs.
-
-| Tool | What it is for |
-| --- | --- |
-| **Notes** | The list. Create, delete, live-search across titles and bodies. |
-| **Editor** | A draft bound to the selected note. Title + body, edited in place. |
-| **Chains** | Outgoing links and derived backlinks for the selected note; click to jump. |
+All the logic that decides what the record contains (the note model, the
+link graph, the atomic store, the persistence merge) lives in widget-free
+modules with tests. The egui views only draw.
 
 ## Quick start
 
@@ -32,86 +14,163 @@ that actually runs.
 cargo run
 ```
 
-`cargo build` should come back clean and `cargo clippy` should pass —
-checked on 2026-10-15 with rustc 1.98.1 (edition 2024) and eframe/egui
-0.36.2. There is not a test suite yet (TODO-002); `cargo test` compiles
-nothing but succeeds.
+On first run the app seeds two linked demo notes and writes them to the
+conventional per-user data directory. Edits are debounced 250 ms, written
+atomically (temp file + rename), and a pending write is flushed — not
+dropped — when the window closes.
 
-## What works now
+Requires a stable Rust toolchain with **edition 2024** support (rustc
+1.85 or newer; built and verified here with rustc 1.98.1).
 
-Verified against the tree on 2026-10-15 — the full checked snapshot lives
-in [`PYRAMID-OF-INTENTS.md`](./PYRAMID-OF-INTENTS.md):
+```sh
+cargo build                # debug build
+cargo test                 # 52 tests
+cargo clippy --all-targets # lints
+```
 
-* A runnable window (1000×700, min 640×480) with a menu bar, a status bar,
-  a searchable note list, a title+body editor, and a chains panel.
-* Notes are created with fresh ids; deleting one strips its id from every
-  other note's links so nothing dangles.
-* The "Link…" popup in the editor toggles directed edges to other notes;
-  the chains panel shows outgoing links and backlinks, and navigates on
-  click.
-* Each note carries `created_at`/`updated_at`; the chains panel shows a
-  relative timestamp.
+## What you get
 
-## What does not work yet
+| Pane | What it does |
+| --- | --- |
+| **Notes** (left) | The list. Create, delete, live-search across titles and bodies. |
+| **Editor** (center) | A draft bound to the selected note. Title + body, edited in place. |
+| **Chains** (right) | Outgoing links and derived backlinks for the selected note; click a row to jump. |
 
-* **Nothing is saved.** There is no persistence — a restart loses every
-  note (TODO-001). The record is in-memory only.
-* **No tests** cover the model or the link graph yet (TODO-002).
-* **No import/export** (TODO-004), **no graph view** (TODO-003), **no
-  keyboard shortcuts** (TODO-007), **no undo for delete** (TODO-006).
+* **Links are directed edges.** A note stores the ids of the notes it points
+  to; backlinks are derived, never stored twice. Deleting a note strips its
+  id from every other note so nothing dangles — and an undo restores the
+  note *and* the links that pointed at it, at their original positions.
+* **One record, one file.** Everything that reaches disk is a single
+  `WorkspaceRecord` written to `…/chainnotes/workspace.json`. The store
+  checks a 4 MiB cap before reading, writes via temp-file + rename, and on
+  boot merges so the on-disk copy wins unless it is strictly older than the
+  in-memory snapshot.
+* **Failures are sentences, not panics.** A corrupt or oversized file, a
+  failed write, a missing data directory — each maps to a distinct status
+  line. No user-data path calls `unwrap`.
 
-The ordered backlog with definitions of done lives in
-[`TODOS.md`](./TODOS.md).
+## Dependencies
+
+Five crates, no more:
+
+| Crate | Version | Why it is here |
+| --- | --- | --- |
+| [`eframe`](https://crates.io/crates/eframe) | 0.36 | The application framework: the native window, the event loop, and the bridge between egui and the platform. We use its `App` trait (`ui()` per frame, `on_exit()` to flush a pending save) and `NativeOptions` for the window size and title. It pulls in a rendering backend and windowing automatically — see below. |
+| [`egui`](https://crates.io/crates/egui) | 0.36 | The immediate-mode GUI library itself: `Panel`, `TextEdit`, `ScrollArea`, `Popup`, `MenuBar`, and the rest of the widgets. eframe depends on it, but we list it directly because our code names `egui::` types. Both crates move in lockstep — keep them on the same version. |
+| [`serde`](https://crates.io/crates/serde) | 1 (with `derive`) | Serialization framework. The `derive` feature lets `#[derive(Serialize, Deserialize)]` generate the JSON conversion for `Note` and `WorkspaceRecord`, so the on-disk schema stays in step with the Rust types. |
+| [`serde_json`](https://crates.io/crates/serde_json) | 1 | The JSON encoder/decoder `serde` writes through. Used in `store.rs` for `to_string_pretty` on save and `from_str` on load. |
+| [`dirs`](https://crates.io/crates/dirs) | 7 | Resolves the platform's conventional data directory so the workspace file lands where users expect: `$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows. One call, `dirs::data_dir()`. |
+
+### What eframe brings in
+
+`eframe` is a facade; its **default features** decide the rest of the tree:
+
+* **`wgpu`** — the GPU rendering backend (via `egui-wgpu`). This is why a
+  debug build takes a while the first time: `wgpu` and its shader/compiler
+  dependencies are large. The alternative is the `glow` (OpenGL) backend,
+  enabled with `default-features = false, features = ["glow", …]`; we do
+  not use it.
+* **`accesskit`** — accessibility scaffolding (screen-reader support) is
+  compiled in by default. We have not done a pass on it yet (TODO-015), but
+  the plumbing is present.
+* **`wayland` + `x11`** — both Linux display protocols, so the binary runs
+  under either without a rebuild.
+* **`default_fonts`** — egui's built-in font atlas, so no font files need
+  to be shipped.
+* **`web_screen_reader`** — only relevant if you build for WASM
+  (TODO-013); inert on native.
+
+If a smaller binary or a faster first build matters more than defaults,
+the features are the knob — but the default set is what this project is
+tested against.
 
 ## Architecture
 
 ```text
 src/main.rs      Composition root: NativeOptions, run_native
-src/app.rs       ChainNotesApp: shared record + the three panels
-                 (Notes sidebar, Editor, Chains), menu bar, status bar
+src/app.rs       ChainNotesApp: composition, boot, and the single write
+                 path handle(Command) for every record mutation
+src/ui/          The three panel builders as free functions over a
+                 borrowed PanelCtx (mod, sidebar, editor, chains)
+src/command.rs   The Command enum — the vocabulary of user intents
+src/state.rs     ChainNotes: the record (notes, selection, ids, status)
+src/graph.rs     Link-graph queries and invariants over &[Note]
+src/history.rs   The one-deep undo slot
+src/autosave.rs  SaveMode + AutoSaver: the store, debounce, and flush
+src/store.rs     WorkspaceStore: the one filesystem seam — load, atomic
+                 save, size cap, boot merge, StoreError
+src/messages.rs  One home for every user-facing status sentence
 src/note.rs      Note model: id, title, body, directed links, timestamps
 ```
 
-* **One shared record.** `ChainNotesApp` owns the `notes` vec, the
-  selection, and the id counter — what will reach disk. The UI holds only
-  transient state (search text, open popup).
-* **Chains are edges, not tags.** A link is a directed id stored on the
-  source note; backlinks are derived, never stored twice
-  (`src/app.rs:ui_chains`).
-* **The core/UI boundary.** Anything that decides whether a link resolves,
-  how the record is shaped, or what survives a restart belongs outside the
-  widget closures — the store seam (TODO-001) will live beside `note.rs`,
-  not inside `app.rs`.
+Three rules hold the shape together:
+
+* **The core/UI boundary.** `state.rs`, `graph.rs`, `history.rs`,
+  `autosave.rs`, `store.rs`, `command.rs`, `messages.rs`, and `note.rs`
+  contain no egui. Anything that decides whether a link resolves, how the
+  record is shaped, or what survives a restart lives there, where it can
+  be unit-tested without a window.
+* **One record owns shared state.** `ChainNotesApp` owns a `ChainNotes`,
+  which owns the `notes` vec, the selection, and the id counter — exactly
+  what reaches disk. The UI holds only transient state (the search box
+  text, whether a popup is open).
+* **One write path.** Panels and menus emit `Command`s; `handle()` is the
+  only place that mutates the record. A future keyboard shortcut or
+  toolbar reuses every mutation by emitting a command, not by
+  re-implementing it.
+
+For the full picture — layering, the boot sequence, and the persistence
+contract — see [`docs/architecture.md`](docs/architecture.md) and
+[`docs/persistence.md`](docs/persistence.md).
+
+## Where the file lives
+
+`WorkspaceStore::default_location()` resolves to:
+
+| Platform | Path |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/chainnotes/workspace.json`, defaulting to `~/.local/share/chainnotes/workspace.json` |
+| macOS | `~/Library/Application Support/chainnotes/workspace.json` |
+| Windows | `%APPDATA%\chainnotes\workspace.json` |
+
+If the platform reports no data directory, the app stays in memory and says
+so in the status bar rather than guessing a path.
 
 ## Documents
 
 | Document | What you'll find |
 | --- | --- |
-| [`PYRAMID-OF-INTENTS.md`](./PYRAMID-OF-INTENTS.md) | The rules a change should respect, plus a checked snapshot of what works now and what doesn't |
+| [`docs/README.md`](docs/README.md) | Index of the guides below |
+| [`docs/overview.md`](docs/overview.md) | What the project is, how it feels to use, what it is not |
+| [`docs/architecture.md`](docs/architecture.md) | The layers, what owns what, and what happens from launch to first paint |
+| [`docs/persistence.md`](docs/persistence.md) | The store: the file format, the debounce, the merge rule, and the power-loss limit |
+| [`docs/development.md`](docs/development.md) | Setup, commands, where the file lands, and fixes for common problems |
+| [`docs/testing.md`](docs/testing.md) | The 52 tests, what each covers, and what is not tested |
+| [`PYRAMID-OF-INTENTS.md`](./PYRAMID-OF-INTENTS.md) | The rules a change should respect, plus a checked snapshot of what works now |
 | [`TODOS.md`](./TODOS.md) | What's left. Every item points at an intent and says what "done" means |
 
 ## Known gaps
 
-What's still open lives in [`TODOS.md`](./TODOS.md), highest priority first —
-if it's not there, it's either done or a deliberate decision. One item that
-looks unfinished falls in the second camp, written down so nobody
-re-litigates it:
+What's still open lives in [`TODOS.md`](./TODOS.md), highest priority first.
+Two things that might look unfinished are deliberate decisions, written
+down so nobody re-litigates them:
 
-* PDF reading, image viewing, and map exploration from the Flutter original
-  are **out of scope for this iteration by decision** (pyramid I4.4,
-  TODO-014). So is WebAssembly compilation (TODO-013). Building any of them
-  is a product decision that needs new intents first, not an oversight.
+* A visual **graph view** of the chains, **import/export** of a workspace
+  file, and **keyboard shortcuts** are not built yet — they are open
+  backlog items (TODO-003, TODO-004, TODO-007), not omissions.
+* Heavier tools (a PDF reader, an image viewer, a map) and a WebAssembly
+  build are **out of scope for this iteration by decision**
+  (pyramid I4.4, TODO-013/TODO-014).
 
 ## Notes
 
-* **Toolchain:** edition 2024, built here with rustc 1.98.1. The only
-  external crates are `eframe` and `egui` (0.36).
+* **Durability, stated honestly:** the store writes via temp-then-rename
+  and flushes but does **not** `fsync` the file or its directory. A crash
+  mid-write is safe (you get the old file or the new one, never a torn
+  file); a power cut in the rename window can still lose the last write.
+  This limit is documented in `src/store.rs` and in
+  [`docs/persistence.md`](docs/persistence.md).
 * **Platforms:** Linux is what gets built and verified here. Windows and
   macOS are intended desktop targets but unbuilt in this tree (TODO-012).
-* **Durability, when it lands:** the planned store writes a JSON file via
-  temp-then-rename and flushes but does **not** `fsync` the file or its
-  directory, so the documented guarantee will be crash-safe, not
-  power-loss-safe — the same honest limit the Flutter original states
-  (pyramid I1.3).
-* **Accessibility:** eframe already pulls in `accesskit`, so the scaffolding
-  for screen readers is present; a real pass is TODO-015.
+* **Accessibility:** eframe compiles `accesskit` in by default, so the
+  scaffolding for screen readers is present; a real pass is TODO-015.

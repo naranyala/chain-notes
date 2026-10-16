@@ -1,5 +1,13 @@
 mod app;
+mod autosave;
+mod command;
+mod graph;
+mod history;
+mod messages;
 mod note;
+mod state;
+mod store;
+mod ui;
 
 use app::ChainNotesApp;
 
