@@ -150,14 +150,19 @@ impl ChainNotes {
         true
     }
 
-    /// Mark the selected note's text as edited.
-    pub fn touch_selected(&mut self) {
-        if let Some(id) = self.selected
-            && let Some(idx) = self.note_index(id)
-        {
-            self.notes[idx].touch();
-            self.status = msg::edited(id);
+    /// Apply staged editor text and mark the note as edited.
+    pub fn edit_note(&mut self, id: u64, title: String, body: String) -> bool {
+        let Some(idx) = self.note_index(id) else {
+            return false;
+        };
+        if self.notes[idx].title == title && self.notes[idx].body == body {
+            return false;
         }
+        self.notes[idx].title = title;
+        self.notes[idx].body = body;
+        self.notes[idx].touch();
+        self.status = msg::edited(id);
+        true
     }
 }
 
@@ -261,6 +266,18 @@ mod tests {
         assert_eq!(c.outgoing(1), vec![2]);
         assert!(c.toggle_link(1, 2));
         assert_eq!(c.outgoing(1), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn edit_note_applies_staged_text_and_stamps_once() {
+        let mut c = app_with_two();
+        let before = c.notes[0].updated_at;
+        assert!(c.edit_note(1, "Renamed".to_owned(), "Body".to_owned()));
+        assert_eq!(c.notes[0].title, "Renamed");
+        assert_eq!(c.notes[0].body, "Body");
+        assert!(c.notes[0].updated_at >= before);
+        assert_eq!(c.status, msg::edited(1));
+        assert!(!c.edit_note(1, "Renamed".to_owned(), "Body".to_owned()));
     }
 
     #[test]

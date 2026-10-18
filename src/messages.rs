@@ -19,6 +19,15 @@ pub const NOT_SAVED: &str = "Not saved yet.";
 pub const SAVING: &str = "Saving\u{2026}";
 pub const NOT_SAVED_SEE_STATUS: &str = "Not saved \u{2014} see status.";
 pub const NO_DATA_DIR: &str = "No data directory on this platform; not saving.";
+pub const EXPORT_CANCELLED: &str = "PDF export cancelled.";
+
+pub fn exported(path: impl Display) -> String {
+    format!("Exported active note to {}.", path)
+}
+
+pub fn export_failed(detail: impl Display) -> String {
+    format!("Could not export the active note as PDF ({detail}).")
+}
 
 pub fn created(id: u64) -> String {
     format!("Created note #{id}.")

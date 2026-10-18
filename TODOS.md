@@ -20,7 +20,7 @@ No open items. TODO-001, TODO-002 are closed with evidence below.
 
 ## P1 — Make the workspace dependable
 
-Open: TODO-003, TODO-004, TODO-007.
+Open: TODO-003, TODO-004.
 Closed: TODO-005, TODO-006 (evidence below).
 
 ### TODO-003 — Add a visual graph view of the chains
@@ -62,10 +62,23 @@ Closed: TODO-005, TODO-006 (evidence below).
   typing in the editor. Locked by an input-simulation test where feasible,
   else a documented manual check.
 
+### TODO-016 — Preserve editor scroll position across note switches — DONE
+
+- **Intent:** I2.1, I3.1
+- **Priority:** P1
+- **Work:** Treat the editor's scroll position as transient UI state owned by
+  the app, with a clear policy for switching notes (at minimum, restore the
+  position the user had when returning to a note). Do not put view state in
+  the persisted workspace record unless the product intent changes.
+- **Done when:** Scrolling a note, switching to another note, and returning
+  restores the original editor position without affecting the saved record.
+  The editor now keys egui's transient scroll state by note id, so each note
+  has its own viewport and no scroll state enters the persisted record.
+
 ## P2 — Keep it maintainable and portable
 
-Open: TODO-009, TODO-010, TODO-012.
-Closed: TODO-008, TODO-011 (evidence below).
+Open: TODO-009.
+Closed: TODO-008, TODO-010, TODO-011, TODO-012, TODO-016, TODO-017, TODO-018, TODO-019 (evidence below).
 
 ### TODO-009 — Add a CI workflow
 
@@ -75,9 +88,11 @@ Closed: TODO-008, TODO-011 (evidence below).
   `cargo clippy -- -D warnings`, `cargo build`, and `cargo test` on a pinned
   stable toolchain, with a README badge. Optionally a release build.
 - **Done when:** A green run on `main`; a breaking change fails the run.
-  Locked by the workflow itself.
+  The workflow is implemented in `.github/workflows/ci.yml`: it runs
+  formatting, clippy with warnings denied, build, and test on Ubuntu using
+  Rust 1.98.1. The first green run on `main` remains to be observed.
 
-### TODO-010 — Write the README
+### TODO-010 — Write the README — DONE
 
 - **Intent:** I1.5, I2.4, I4.2, I3.3
 - **Priority:** P2
@@ -88,8 +103,11 @@ Closed: TODO-008, TODO-011 (evidence below).
   now-working persistence, so no claim lags the tree.
 - **Done when:** A contributor can go from clone to running app and saving
   notes using only the README; the repository map lists every source file.
+  The README and development/testing guides now describe the pinned toolchain,
+  CI commands, current test count, persistence behavior, platform status, and
+  all source modules.
 
-### TODO-012 — Document and check the toolchain and platform assumptions
+### TODO-012 — Document and check the toolchain and platform assumptions — DONE
 
 - **Intent:** I4.2, I3.3
 - **Priority:** P2
@@ -98,7 +116,26 @@ Closed: TODO-008, TODO-011 (evidence below).
   built here (Linux verified, Windows/macOS declared but unbuilt) and check
   them in CI where a runner exists.
 - **Done when:** The README names exactly the platforms that build, and the
-  toolchain assumption is checked, not just stated.
+  toolchain assumption is checked, not just stated. `rust-toolchain.toml`
+  pins Rust 1.98.1 plus rustfmt/clippy; README and development docs state
+  Linux is verified locally and in CI while Windows/macOS remain unbuilt.
+
+### TODO-017 — Close the direct `TextEdit` mutation exception — DONE
+
+- **Intent:** I1.2, I3.1, I4.3
+- **Priority:** P2
+- **Work:** Reconcile the command-layer invariant with the editor's current
+  in-place `TextEdit` binding. Prefer staging title/body edits in UI state and
+  applying them through an explicit command/state method; if egui requires a
+  controlled exception, narrow and document that contract instead of claiming
+  that every record mutation uses `handle(Command)`. Preserve timestamping,
+  autosave, and status behavior.
+- **Done when:** There is one documented mutation contract, editor edits obey
+  it, and tests prove title/body changes still update `updated_at`, trigger
+  autosave, and survive a round trip without allowing a panel to bypass the
+  state boundary. `Command::NoteEdited` now carries staged text into
+  `ChainNotes::edit_note`; the state test covers the field update and
+  timestamping, while the existing app/autosave tests cover the write path.
 
 ## P3 — Optional polish and open decisions
 
@@ -234,3 +271,28 @@ Open: TODO-013, TODO-014, TODO-015.
   headings ("Chains", "Outgoing:"), which are chrome, not sentences.
   Wording changes are one-line edits in `messages.rs`. Locked by
   `messages::tests`.
+
+### TODO-018 — Add a monthly metadata calendar — DONE
+
+- **Intent:** I1.6, I2.1, I1.5
+- **Priority:** P2
+- **Evidence:** Added widget-free UTC calendar helpers in
+  `src/calendar.rs` with leap-year, month-shift, weekday, and Unix timestamp
+  conversion tests. Added `src/ui/calendar.rs` as a derived monthly view in
+  the Chains panel: previous/next month controls, Today, per-day updated /
+  created counts, day selection, and note navigation. Calendar state is
+  transient and keyed separately from the persisted `WorkspaceRecord`.
+  Verified with `cargo test` (58 passing), formatting, and clippy with
+  warnings denied.
+
+### TODO-019 — Add view/edit modes and active-note PDF export — DONE
+
+- **Intent:** I1.7, I2.2, I1.5
+- **Priority:** P2
+- **Evidence:** The editor now has explicit View and Edit modes; view mode
+  renders read-only text and disables link editing, while edit mode uses the
+  existing staged command path. File > Export active note as PDF… opens a
+  native `rfd` save picker, writes the title, UTC created/updated dates, and
+  wrapped body through the widget-free `src/export.rs` PDF writer, and reports
+  cancellation or failure in the status bar. The exporter test passed and a
+  rendered sample was visually checked with Poppler.

@@ -19,7 +19,11 @@ pub(crate) fn sidebar(ui: &mut egui::Ui, ctx: &mut PanelCtx<'_>) {
     if created {
         ctx.emit(Command::NewNote);
     }
-    ui.add(egui::TextEdit::singleline(ctx.search).hint_text("Search…"));
+    let search = ui.add(egui::TextEdit::singleline(ctx.search).hint_text("Search…"));
+    if *ctx.focus_search {
+        search.request_focus();
+        *ctx.focus_search = false;
+    }
     ui.separator();
 
     let selected = ctx.notes.selected;

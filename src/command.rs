@@ -7,7 +7,7 @@
 //! mutation.
 
 /// A user intent that the app shell knows how to carry out.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Command {
     /// Create a note titled "Untitled" and select it.
     NewNote,
@@ -19,8 +19,16 @@ pub(crate) enum Command {
     SelectNote(u64),
     /// Toggle the directed edge `from -> to`.
     ToggleLink { from: u64, to: u64 },
-    /// The selected note's text was edited in place.
-    NoteEdited,
+    /// Replace a note's title and body through the state boundary.
+    NoteEdited {
+        id: u64,
+        title: String,
+        body: String,
+    },
+    /// Flush the workspace immediately.
+    ForceSave,
+    /// Put keyboard focus in the sidebar search field.
+    FocusSearch,
     /// Show the about line in the status bar.
     About,
     /// Flush a pending write and close the window.

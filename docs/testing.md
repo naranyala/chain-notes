@@ -4,7 +4,7 @@
 cargo test
 ```
 
-52 tests, all below the UI boundary — no window is opened, no egui context
+58 tests, all below the UI boundary — no window is opened, no egui context
 is built. They run in well under a second.
 
 ## The suites
@@ -43,7 +43,7 @@ The one-deep undo slot.
 | `record_then_take_returns_the_slot_once` | A recorded delete is retrievable exactly once |
 | `a_second_record_replaces_the_first` | One-deep: a new delete replaces the previous slot |
 
-### `state` (12 tests, `src/state.rs`)
+### `state` (13 tests, `src/state.rs`)
 
 The `ChainNotes` record: everything that reaches disk except the file
 itself. Delegates link work to `graph` and undo to `history`.
@@ -62,6 +62,7 @@ itself. Delegates link work to `graph` and undo to `history`.
 | `toggle_link_refuses_self_and_missing_endpoints` | Self-links and links to nonexistent ids are rejected |
 | `search_matches_title_and_body_case_insensitively` | Search is case-insensitive over title and body; empty query shows all; no match returns empty |
 | `to_record_round_trips_through_from_record` | The serde-bound snapshot round-trips through `from_record` |
+| `edit_note_applies_staged_text_and_stamps_once` | Staged title/body text is applied through the state boundary, timestamps the note, and avoids a second no-op edit |
 
 ### `store` (12 tests, `src/store.rs`)
 
@@ -131,6 +132,22 @@ The status sentences.
 | `counts_use_plural_forms` | "Workspace is empty." / "Loaded 1 note." / "Loaded N notes." |
 | `detail_sentences_embed_the_cause` | The parser/OS detail is interpolated into the sentence |
 
+### `calendar` (3 tests, `src/calendar.rs`)
+
+UTC calendar arithmetic is tested without egui or a window.
+
+| Test | Locks |
+| --- | --- |
+| `unix_epoch_is_thursday_january_first` | Unix timestamp conversion and Monday-based weekday numbering |
+| `month_lengths_and_leap_years_are_correct` | Gregorian month lengths, century rules, and leap years |
+| `month_shifting_crosses_year_boundaries` | Previous/next month navigation across year boundaries |
+
+### `export` (1 test, `src/export.rs`)
+
+| Test | Locks |
+| --- | --- |
+| `export_writes_a_pdf_with_note_text_and_metadata` | The writer emits a PDF header containing title, metadata, and escaped body text |
+
 ## What is not tested
 
 * **The egui code itself** (`app.rs` menu/status drawing, `ui/*`). There
@@ -150,6 +167,9 @@ The status sentences.
   platforms; only the Linux resolution is exercised here.
 * **A screen-reader or contrast pass.** `accesskit` is compiled in by
   eframe's defaults, but nothing asserts on it (TODO-015).
+* **Native picker and visual editor flows.** The PDF picker, View/Edit
+  toggle, calendar clicks, and keyboard shortcuts still need a manual or
+  headless-egui interaction check; their non-UI logic is covered separately.
 
 ## Adding a test
 

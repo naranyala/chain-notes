@@ -9,7 +9,7 @@ contains never import egui.**
 ┌─ decided by egui ───────────────────────────────────────────┐
 │  main.rs    Composition root: NativeOptions, run_native     │
 │  app.rs     ChainNotesApp: composition + handle(Command)    │
-│  ui/        The three panel builders (free functions)       │
+│  ui/        The panel builders (free functions)             │
 └─────────────────────────────────────────────────────────────┘
                 │ owns / calls
 ┌─ decided without egui ──────────────────────────────────────┐
@@ -21,6 +21,8 @@ contains never import egui.**
 │  command.rs   The Command enum (the write path's vocabulary)│
 │  messages.rs  Every user-facing status sentence             │
 │  note.rs      The Note model and time helpers               │
+│  calendar.rs  UTC date/month helpers                         │
+│  export.rs    Single-note PDF writer                         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -38,11 +40,13 @@ reuse every mutation without re-implementing it.
 | Module | Owns | Depends on |
 | --- | --- | --- |
 | `main.rs` | Nothing persistent. Builds `NativeOptions` (window size, title) and hands `ChainNotesApp::new` to `eframe::run_native`. | `app` |
-| `app.rs` | `ChainNotesApp`: the `ChainNotes` record, the `AutoSaver`, and the transient UI state (search text, popup). Plus the boot decision (`boot()`, the store-taking constructor `at()`), the single write path `handle(Command)`, and the `eframe::App` impl (menu, status bar, panel layout). | `state`, `autosave`, `command`, `store`, `messages`, `ui` |
+| `app.rs` | `ChainNotesApp`: the `ChainNotes` record, the `AutoSaver`, transient UI state (search, popup, calendar position, editor mode), the boot decision, command dispatch, menus, status bar, panel layout, and PDF picker. | `state`, `autosave`, `command`, `store`, `messages`, `export`, `ui` |
 | `ui/mod.rs` | `PanelCtx` — what a panel can see and touch this frame — and the `ui/` module wiring. | `command`, `state` |
 | `ui/sidebar.rs` | The note list, live search box, and "＋ New" button. Emits `NewNote` / `SelectNote`. | `ui`, `command`, `messages` |
-| `ui/editor.rs` | The title/body editor plus Delete / Undo / Link… actions. Text edits are bound directly; discrete actions are emitted as commands. | `ui`, `command`, `messages` |
+| `ui/editor.rs` | The title/body editor plus Delete / Undo / Link… actions. Text edits are staged locally and emitted as commands. | `ui`, `command`, `messages` |
 | `ui/chains.rs` | Outgoing links and derived backlinks; row clicks emit `SelectNote`. | `ui`, `command`, `messages`, `note` (for `fmt_time`) |
+| `ui/calendar.rs` | Monthly UTC calendar derived from note creation/update timestamps; day and note clicks emit `SelectNote`. | `ui`, `calendar`, `command`, `note` |
+| `export.rs` | Builds a one-note PDF with title, UTC metadata, and wrapped body text. **No egui.** | `note`, `calendar`, `std` |
 | `state.rs` | `ChainNotes`: the `notes` vec, selection, id counter, and status sentence. Delegates link work to `graph` and undo to `history`. Every mutation that should persist goes through a method here. **No egui.** | `graph`, `history`, `store` (for `WorkspaceRecord`), `messages`, `note` |
 | `graph.rs` | Pure operations on `&[Note]` / `&mut [Note]`: `outgoing`, `backlinks`, `toggle_link`, `strip_edges_to`, `restore_edges`, `normalize_links`. **No egui, no filesystem.** | `note` |
 | `history.rs` | `History` / `DeletedSlot`: the one-deep undo slot (record a delete, take it back). **No egui.** | `note` |
@@ -51,6 +55,7 @@ reuse every mutation without re-implementing it.
 | `command.rs` | `Command` (the vocabulary of user intents) and `Effect` (side effects that need the egui context, e.g. `CloseWindow`). **No egui, no state.** | std only |
 | `messages.rs` | Every user-facing status sentence, as constants or small functions with arguments. **No egui.** | std only |
 | `note.rs` | `Note` (id, title, body, directed links, timestamps), `now_secs()`, `fmt_time()`. **No egui.** | `serde` |
+| `calendar.rs` | UTC Unix timestamp conversion, month lengths, weekdays, month shifting. **No egui.** | std only |
 
 ## Who owns shared state
 
@@ -63,7 +68,8 @@ text and whether the link popup is open.
 
 A piece of state that both need has one owner: `ChainNotes`. Panels read
 it and call methods on it; they never reach into the store, and they never
-mutate it except through a command (or an in-place `TextEdit` binding).
+mutate it except through a command. Text edits are staged in the widget for
+the frame and applied by `Command::NoteEdited`.
 
 ```text
 ChainNotesApp
@@ -80,7 +86,9 @@ ChainNotesApp
 │   ├── dirty / last_edit          ← debounce bookkeeping
 │   └── debounce: Duration
 ├── search: String                 ← transient
-└── link_popup_open: bool          ← transient
+├── link_popup_open: bool          ← transient
+├── calendar_year/month/day        ← transient
+└── edit_mode: bool                ← transient
 ```
 
 ## The command layer
@@ -95,12 +103,15 @@ Every user intent that changes the record is a `Command`
 | `UndoDelete` | `undo_delete()` (when there is a slot) + `saver.touch()` |
 | `SelectNote(id)` | set `selected` (view-only, no save) |
 | `ToggleLink { from, to }` | `toggle_link()` (when it succeeds) + `saver.touch()` |
-| `NoteEdited` | `touch_selected()` + `saver.touch()` |
+| `NoteEdited { id, title, body }` | `edit_note()` with staged fields + `saver.touch()` |
+| `ForceSave` | flush immediately; report any save error |
+| `FocusSearch` | request focus for the sidebar search field |
 | `About` | set the status sentence (view-only) |
 | `Quit` | `saver.flush()` + return `Effect::CloseWindow` |
 
 This is the seam that makes TODO-007 (keyboard shortcuts) cheap: a
-keymap is a `Key → Command` table; no new mutation logic. TODO-004
+keymap is a `Key → Command` table; no new mutation logic. PDF export is a
+UI picker over the widget-free `export.rs` seam. TODO-004
 (import/export) becomes `Command::Import(path)` / `Export(path)` plus a
 `handle` arm; TODO-003 (graph view) becomes a fourth panel that emits
 `SelectNote`.
@@ -146,7 +157,7 @@ ui(ui, frame)
   ├─ Panel::top("menu")         ← File / Help; buttons emit commands
   ├─ Panel::bottom("status")    ← sentence left, saver.mode().label() right
   ├─ Panel::left("sidebar")     ← panel(ui, ui::sidebar)
-  ├─ Panel::right("chains")     ← panel(ui, ui::chains)
+  ├─ Panel::right("chains")     ← chains plus ui::calendar
   └─ CentralPanel               ← panel(ui, ui::editor)
        where panel() builds a PanelCtx, runs the builder, then drains
        the emitted commands through handle()
@@ -157,10 +168,10 @@ ui(ui, frame)
 ```text
 keystroke in TextEdit
   → TextEdit::changed() reports true
-  → ui/editor.rs emits Command::NoteEdited        (the TextEdit already
-                                                   mutated the note's title/body)
+  → ui/editor.rs emits Command::NoteEdited { id, title, body }
   → app.rs panel() drains it → handle(NoteEdited)
-      → notes.touch_selected()                    (state.rs stamps updated_at,
+      → notes.edit_note(id, title, body)           (state.rs applies the staged
+                                                   fields, stamps updated_at,
                                                    sets "Edited note #N.")
       → saver.touch()                             (autosave.rs: dirty = true,
                                                    mode = Dirty, last_edit = now)

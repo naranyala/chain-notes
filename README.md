@@ -1,8 +1,10 @@
 # chainnotes
 
-**Chainnotes is a small Rust + egui desktop app for taking notes that link
-to each other.** Three panes — a note list, an editor, and a chains panel —
-work over one shared record that is saved to a single JSON file.
+[![CI](https://github.com/naranyala/rust-egui-chainnotes/actions/workflows/ci.yml/badge.svg)](https://github.com/naranyala/rust-egui-chainnotes/actions/workflows/ci.yml)
+
+**chainnotes is a small Rust/egui desktop workspace for notes that link to one
+another.** Notes, editing, chains, and a monthly metadata calendar operate on
+one shared record saved to a single JSON file.
 
 All the logic that decides what the record contains (the note model, the
 link graph, the atomic store, the persistence merge) lives in widget-free
@@ -19,13 +21,14 @@ conventional per-user data directory. Edits are debounced 250 ms, written
 atomically (temp file + rename), and a pending write is flushed — not
 dropped — when the window closes.
 
-Requires a stable Rust toolchain with **edition 2024** support (rustc
-1.85 or newer; built and verified here with rustc 1.98.1).
+Requires the pinned Rust toolchain in [`rust-toolchain.toml`](rust-toolchain.toml):
+rustc **1.98.1**, with edition 2024 support, rustfmt, and clippy.
 
 ```sh
 cargo build                # debug build
-cargo test                 # 52 tests
-cargo clippy --all-targets # lints
+cargo test                 # 58 tests
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings # lints, warnings are errors
 ```
 
 ## What you get
@@ -33,8 +36,13 @@ cargo clippy --all-targets # lints
 | Pane | What it does |
 | --- | --- |
 | **Notes** (left) | The list. Create, delete, live-search across titles and bodies. |
-| **Editor** (center) | A draft bound to the selected note. Title + body, edited in place. |
+| **Editor** (center) | The active note in read-only View mode or staged, editable Edit mode. |
 | **Chains** (right) | Outgoing links and derived backlinks for the selected note; click a row to jump. |
+| **Calendar** (right, below Chains) | Browse months, see created/updated note counts per day, and click a day or note to navigate. |
+
+The editor has explicit **View** and **Edit** modes. File > **Export active
+note as PDF…** opens a native save picker and exports the note title, UTC
+created/updated dates, and wrapped body text.
 
 * **Links are directed edges.** A note stores the ids of the notes it points
   to; backlinks are derived, never stored twice. Deleting a note strips its
@@ -51,7 +59,7 @@ cargo clippy --all-targets # lints
 
 ## Dependencies
 
-Five crates, no more:
+Six direct crates:
 
 | Crate | Version | Why it is here |
 | --- | --- | --- |
@@ -60,6 +68,7 @@ Five crates, no more:
 | [`serde`](https://crates.io/crates/serde) | 1 (with `derive`) | Serialization framework. The `derive` feature lets `#[derive(Serialize, Deserialize)]` generate the JSON conversion for `Note` and `WorkspaceRecord`, so the on-disk schema stays in step with the Rust types. |
 | [`serde_json`](https://crates.io/crates/serde_json) | 1 | The JSON encoder/decoder `serde` writes through. Used in `store.rs` for `to_string_pretty` on save and `from_str` on load. |
 | [`dirs`](https://crates.io/crates/dirs) | 7 | Resolves the platform's conventional data directory so the workspace file lands where users expect: `$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows. One call, `dirs::data_dir()`. |
+| [`rfd`](https://crates.io/crates/rfd) | 0.17 | Opens the native save picker used by PDF export. |
 
 ### What eframe brings in
 
@@ -90,11 +99,13 @@ tested against.
 src/main.rs      Composition root: NativeOptions, run_native
 src/app.rs       ChainNotesApp: composition, boot, and the single write
                  path handle(Command) for every record mutation
-src/ui/          The three panel builders as free functions over a
-                 borrowed PanelCtx (mod, sidebar, editor, chains)
+src/ui/          The panel builders as free functions over a
+                 borrowed PanelCtx (mod, sidebar, editor, chains, calendar)
 src/command.rs   The Command enum — the vocabulary of user intents
 src/state.rs     ChainNotes: the record (notes, selection, ids, status)
 src/graph.rs     Link-graph queries and invariants over &[Note]
+src/calendar.rs  Dependency-free UTC calendar/date helpers for metadata views
+src/export.rs    Widget-free single-note PDF export
 src/history.rs   The one-deep undo slot
 src/autosave.rs  SaveMode + AutoSaver: the store, debounce, and flush
 src/store.rs     WorkspaceStore: the one filesystem seam — load, atomic
@@ -105,8 +116,9 @@ src/note.rs      Note model: id, title, body, directed links, timestamps
 
 Three rules hold the shape together:
 
-* **The core/UI boundary.** `state.rs`, `graph.rs`, `history.rs`,
-  `autosave.rs`, `store.rs`, `command.rs`, `messages.rs`, and `note.rs`
+* **The core/UI boundary.** `state.rs`, `graph.rs`, `calendar.rs`,
+  `export.rs`, `history.rs`, `autosave.rs`, `store.rs`, `command.rs`,
+  `messages.rs`, and `note.rs`
   contain no egui. Anything that decides whether a link resolves, how the
   record is shaped, or what survives a restart lives there, where it can
   be unit-tested without a window.
@@ -115,9 +127,9 @@ Three rules hold the shape together:
   what reaches disk. The UI holds only transient state (the search box
   text, whether a popup is open).
 * **One write path.** Panels and menus emit `Command`s; `handle()` is the
-  only place that mutates the record. A future keyboard shortcut or
-  toolbar reuses every mutation by emitting a command, not by
-  re-implementing it.
+  only place that dispatches record mutations. Editor text is staged in the
+  widget and applied through `Command::NoteEdited`, while a future keyboard
+  shortcut or toolbar reuses every mutation by emitting a command.
 
 For the full picture — layering, the boot sequence, and the persistence
 contract — see [`docs/architecture.md`](docs/architecture.md) and
@@ -145,7 +157,7 @@ so in the status bar rather than guessing a path.
 | [`docs/architecture.md`](docs/architecture.md) | The layers, what owns what, and what happens from launch to first paint |
 | [`docs/persistence.md`](docs/persistence.md) | The store: the file format, the debounce, the merge rule, and the power-loss limit |
 | [`docs/development.md`](docs/development.md) | Setup, commands, where the file lands, and fixes for common problems |
-| [`docs/testing.md`](docs/testing.md) | The 52 tests, what each covers, and what is not tested |
+| [`docs/testing.md`](docs/testing.md) | The 58 tests, what each covers, and what is not tested |
 | [`PYRAMID-OF-INTENTS.md`](./PYRAMID-OF-INTENTS.md) | The rules a change should respect, plus a checked snapshot of what works now |
 | [`TODOS.md`](./TODOS.md) | What's left. Every item points at an intent and says what "done" means |
 
@@ -155,9 +167,9 @@ What's still open lives in [`TODOS.md`](./TODOS.md), highest priority first.
 Two things that might look unfinished are deliberate decisions, written
 down so nobody re-litigates them:
 
-* A visual **graph view** of the chains, **import/export** of a workspace
-  file, and **keyboard shortcuts** are not built yet — they are open
-  backlog items (TODO-003, TODO-004, TODO-007), not omissions.
+* A visual **graph view** of the chains and **import/export** of a workspace
+  file are not built yet — they are open backlog items (TODO-003, TODO-004),
+  not omissions.
 * Heavier tools (a PDF reader, an image viewer, a map) and a WebAssembly
   build are **out of scope for this iteration by decision**
   (pyramid I4.4, TODO-013/TODO-014).
@@ -170,7 +182,7 @@ down so nobody re-litigates them:
   file); a power cut in the rename window can still lose the last write.
   This limit is documented in `src/store.rs` and in
   [`docs/persistence.md`](docs/persistence.md).
-* **Platforms:** Linux is what gets built and verified here. Windows and
-  macOS are intended desktop targets but unbuilt in this tree (TODO-012).
-* **Accessibility:** eframe compiles `accesskit` in by default, so the
-  scaffolding for screen readers is present; a real pass is TODO-015.
+* **Platforms:** Linux is built and verified locally and in CI. Windows and
+  macOS are intended desktop targets but are not built in CI yet.
+* **Accessibility:** eframe compiles AccessKit by default, but the manual
+  screen-reader and contrast pass remains TODO-015.

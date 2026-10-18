@@ -2,11 +2,11 @@
 
 ## Prerequisites
 
-* A stable Rust toolchain with **edition 2024** support — rustc 1.85 or
-  newer. This tree is built and verified with rustc 1.98.1 and Cargo
-  1.98.1.
+* The pinned Rust toolchain in [`../rust-toolchain.toml`](../rust-toolchain.toml):
+  rustc 1.98.1 with rustfmt and clippy.
 * A Linux display (X11 or Wayland). The default eframe features compile
-  support for both. There is no headless mode and no CI yet (TODO-009).
+  support for both. CI runs the format, clippy, build, and test checks on
+  Ubuntu; it does not launch the native window.
 
 ## Commands
 
@@ -14,8 +14,8 @@
 cargo run                   # build and start the app
 cargo build                 # debug build only
 cargo build --release       # optimized build
-cargo test                  # run the 52 tests
-cargo clippy --all-targets  # lints, including test code
+cargo test                  # run the 58 tests
+cargo clippy --all-targets -- -D warnings  # lints, including test code
 cargo fmt                   # format (check with --check)
 ```
 
@@ -51,7 +51,9 @@ XDG_DATA_HOME=/tmp/chainnotes-test cargo run
 ```text
 src/main.rs      Composition root
 src/app.rs       ChainNotesApp: composition, boot, handle(Command), eframe::App
-src/ui/          The three panel builders (mod, sidebar, editor, chains)
+src/ui/          The panel builders (mod, sidebar, editor, chains, calendar)
+src/calendar.rs  UTC calendar arithmetic, no egui
+src/export.rs    Single-note PDF writer, no egui
 src/command.rs   The Command enum (the write path's vocabulary)
 src/state.rs     ChainNotes: the record, no egui
 src/graph.rs     Link-graph queries and invariants, no egui

@@ -1,6 +1,8 @@
 mod app;
 mod autosave;
+mod calendar;
 mod command;
+mod export;
 mod graph;
 mod history;
 mod messages;

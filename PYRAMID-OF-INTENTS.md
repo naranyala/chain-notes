@@ -91,6 +91,27 @@ backlinks; delete B and A's outgoing list no longer dangles.
 Favor clear code paths, a short dependency list, reproducible commands, and
 documentation that matches the code that actually runs.
 
+### I1.6 — Metadata is navigable by time
+
+Each note's existing creation and update timestamps should support a compact
+monthly calendar view. The calendar is derived from the note record, uses UTC
+for deterministic date grouping, and lets a user move from a day to the notes
+that were created or updated on it without introducing a second metadata
+store.
+
+**Success looks like:** a user can browse months, see which days contain note
+activity, click a day, and jump to one of that day's notes.
+
+### I1.7 — Read, edit, and carry a note outward
+
+The active note should have an explicit read-only view and an edit mode, and
+the user should be able to export that active note, including its metadata,
+as a portable PDF through a native file picker.
+
+**Success looks like:** view mode cannot change note text, edit mode can, and
+the active note can be saved as a readable PDF without changing workspace
+state.
+
 ## I2 — User intents
 
 ### I2.1 — A user does not lose work when switching notes or restarting
@@ -172,7 +193,7 @@ TODO-014.
 
 Verified against the tree rather than against these entries, on 2026-10-16
 with rustc 1.98.1 and eframe/egui 0.36.2 — `cargo build` clean,
-`cargo clippy --all-targets` clean, `cargo test` 52/52 passing. Every claim
+`cargo clippy --all-targets` clean, `cargo test` 58/58 passing. Every claim
 below was checked by running it on that date.
 
 Already present and working:
@@ -180,7 +201,8 @@ Already present and working:
 - A runnable eframe window (1000×700, min 640×480) with a top menu bar
   (File: New note / Undo delete / Quit; Help: About), a bottom status bar
   with a save-mode label, a left note list with live search, a central
-  title+body editor, and a right chains panel — **I1.1**.
+  title+body editor, and a right chains panel with a monthly metadata
+  calendar — **I1.1**.
 - **Persistence** through one seam: `WorkspaceStore` (`src/store.rs`) owns
   the only filesystem path (`dirs::data_dir()/chainnotes/workspace.json`),
   checks a 4 MiB cap before reading, writes atomically (temp + rename), and
@@ -199,7 +221,7 @@ Already present and working:
 - The widget-free core: `state.rs` (the `ChainNotes` record), `graph.rs`
   (link-graph queries and invariants), `history.rs` (the undo slot),
   `autosave.rs` (debounce/flush), `store.rs`, `command.rs`,
-  `messages.rs`, `note.rs` — **I1.2**.
+  `messages.rs`, `note.rs`, `calendar.rs` (UTC date helpers) — **I1.2**.
 - **One write path**: every record mutation enters through
   `ChainNotesApp::handle(Command)` (`src/app.rs`); panels and menus emit
   `Command`s (`src/command.rs`) rather than mutating state directly, so a
@@ -208,8 +230,8 @@ Already present and working:
   note *and* every incoming edge at its original position — **I2.1**.
 - The `Note` model: id, title, body, directed `links`, `created_at`/
   `updated_at`, `touch()` on edit, relative-time formatting — **I1.4**.
-- 52 tests across eight modules (note 4, graph 5, history 3, state 12,
-  store 12, autosave 6, app 8, messages 2): id allocation, delete
+- 58 tests across ten modules (note 4, calendar 3, graph 5, history 3,
+  state 13, store 12, autosave 6, app 8, messages 2, export 1): id allocation, delete
   stripping both edge directions, undo + edge-position restore, search,
   record round-trip, corrupt/empty/over-cap loads, atomic-write failure
   leaving the previous file intact, error-sentence distinctness, the merge
@@ -217,7 +239,7 @@ Already present and working:
   save-mode truthfulness of first-run / loaded / corrupt boots, the
   debounce/flush controller, and the command write path — **I4.1**,
   **I2.3**.
-- Fourteen source files (ten in `src/` plus the four in `src/ui/`), every
+- Sixteen source files (eleven in `src/` plus the five in `src/ui/`), every
   one under 300 production lines — **I0.1**.
 
 Known gaps, in the order they should be closed (the full backlog with
@@ -227,10 +249,11 @@ definitions of done lives in `TODOS.md`):
   (deferred by I4.4). TODO-003.
 - **No import/export.** A workspace cannot be moved between machines by
   file yet — **I1.1**, **I2.2**. TODO-004.
-- **No keyboard shortcuts.** New/delete/save are mouse-only — **I2.4**.
-  TODO-007.
-- **CI and README refresh.** A workflow and a docs pass to keep every
-  claim checkable — **I4.1**, **I1.5**. TODO-009, TODO-010.
+- **Keyboard shortcuts** now cover new/delete/save/search through one egui
+  shortcut table; manual cross-pane verification remains part of TODO-007.
+- **CI and README refresh.** The workflow, toolchain pin, and docs pass are
+  present; TODO-009 remains open until a green run is recorded on `main` —
+  **I4.1**, **I1.5**.
 
 ## Appendix — how the app is shaped: input → process → output
 
@@ -243,7 +266,7 @@ through that one seam.
 | Tool | Input (gesture) | Process (where the decision lives) | Output (record + visible feedback) |
 | --- | --- | --- | --- |
 | Notes | "＋ New" button; Delete button; search keystroke; list-row click | Panels emit `Command::NewNote` / `DeleteSelected` / `SelectNote`; `handle()` calls `ChainNotes::add_note` / `delete_note` (which allocate the id, strip dangling links via `graph`, set the selection and the status sentence); `visible_notes` filters by case-insensitive title+body substring | `notes` vec + `selected` + status line; sidebar rows and count |
-| Editor | Title/body `TextEdit` change; "Link…" popup click | `TextEdit` binds the fields directly; a change emits `Command::NoteEdited` (stamps `updated_at`); the popup emits `Command::ToggleLink` to add or remove an edge | `notes[i].title/body/links`; status line "Edited note #N" |
+| Editor | View/Edit toggle; staged title/body `TextEdit` change; "Link…" popup click | View is read-only; Edit emits `Command::NoteEdited` (stamps `updated_at`); the popup emits `Command::ToggleLink` to add or remove an edge | `notes[i].title/body/links`; status line "Edited note #N" |
 | Chains | Outgoing/backlink row click | Emits `Command::SelectNote` with the target id | `selected`; the editor switches to that note |
 
 Global flows:
@@ -279,7 +302,7 @@ code's. This snapshot holds the line: it claims persistence only because
 `WorkspaceStore` exists, the boot path calls it, `on_exit` flushes it, and
 tests lock the round-trip, the merge rule, and the boot wiring itself
 (TODO-001 and TODO-002 are closed with that evidence in `TODOS.md`). It
-does not claim a graph view, import/export, shortcuts, or a CI run,
+does not claim a graph view, import/export, or a CI run,
 because none of those exist. A document describing intent can be
 aspirational; a document labelled *current state* cannot, and it is the
 label that makes people stop checking.

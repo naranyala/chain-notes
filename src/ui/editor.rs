@@ -23,6 +23,9 @@ pub(crate) fn editor(ui: &mut egui::Ui, ctx: &mut PanelCtx<'_>) {
         .resizable(false)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                ui.selectable_value(ctx.edit_mode, false, "View");
+                ui.selectable_value(ctx.edit_mode, true, "Edit");
+                ui.separator();
                 if ui.button("Delete").clicked() {
                     delete = true;
                 }
@@ -36,7 +39,7 @@ pub(crate) fn editor(ui: &mut egui::Ui, ctx: &mut PanelCtx<'_>) {
                 ui.separator();
                 ui.weak(format!("note #{id}"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let resp = ui.button("Link…");
+                    let resp = ui.add_enabled(*ctx.edit_mode, egui::Button::new("Link…"));
                     if resp.clicked() {
                         *ctx.link_popup_open = !*ctx.link_popup_open;
                     }
@@ -75,27 +78,43 @@ pub(crate) fn editor(ui: &mut egui::Ui, ctx: &mut PanelCtx<'_>) {
         });
 
     egui::CentralPanel::default().show(ui, |ui| {
+        // Include the note id in the persistent scroll-area id so egui keeps
+        // one transient viewport per note rather than sharing one offset.
         egui::ScrollArea::vertical()
-            .id_salt("editor_scroll")
+            .id_salt(("editor_scroll", id))
             .show(ui, |ui| {
-                let mut changed = false;
-                {
-                    let note = &mut ctx.notes.notes[idx];
-                    let title = egui::TextEdit::singleline(&mut note.title)
-                        .hint_text("Title")
-                        .desired_width(f32::INFINITY)
-                        .font(egui::TextStyle::Heading);
-                    changed |= ui.add(title).changed();
-                    ui.add_space(4.0);
-                    let body = egui::TextEdit::multiline(&mut note.body)
-                        .hint_text("Start writing…")
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(20)
-                        .code_editor();
-                    changed |= ui.add(body).changed();
+                if !*ctx.edit_mode {
+                    let note = &ctx.notes.notes[idx];
+                    ui.heading(&note.title);
+                    ui.add_space(8.0);
+                    if note.body.is_empty() {
+                        ui.weak("No body text.");
+                    } else {
+                        ui.label(&note.body);
+                    }
+                    return;
                 }
+                let mut title_value = ctx.notes.notes[idx].title.clone();
+                let mut body_value = ctx.notes.notes[idx].body.clone();
+                let mut changed = false;
+                let title = egui::TextEdit::singleline(&mut title_value)
+                    .hint_text("Title")
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Heading);
+                changed |= ui.add(title).changed();
+                ui.add_space(4.0);
+                let body = egui::TextEdit::multiline(&mut body_value)
+                    .hint_text("Start writing…")
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(20)
+                    .code_editor();
+                changed |= ui.add(body).changed();
                 if changed {
-                    ctx.emit(Command::NoteEdited);
+                    ctx.emit(Command::NoteEdited {
+                        id,
+                        title: title_value,
+                        body: body_value,
+                    });
                 }
             });
     });

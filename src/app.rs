@@ -13,11 +13,39 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::autosave::{AutoSaver, SaveMode};
+use crate::calendar;
 use crate::command::{Command, Effect};
 use crate::messages as msg;
 use crate::state::ChainNotes;
 use crate::store::{self, WorkspaceRecord, WorkspaceStore};
 use crate::ui::{self, PanelCtx};
+
+#[derive(Clone, Copy)]
+enum ShortcutAction {
+    NewNote,
+    ForceSave,
+    DeleteSelected,
+    FocusSearch,
+}
+
+const SHORTCUTS: &[(egui::KeyboardShortcut, ShortcutAction)] = &[
+    (
+        egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N),
+        ShortcutAction::NewNote,
+    ),
+    (
+        egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S),
+        ShortcutAction::ForceSave,
+    ),
+    (
+        egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::D),
+        ShortcutAction::DeleteSelected,
+    ),
+    (
+        egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F),
+        ShortcutAction::FocusSearch,
+    ),
+];
 
 pub struct ChainNotesApp {
     /// The shared record — everything that reaches disk.
@@ -28,6 +56,12 @@ pub struct ChainNotesApp {
     search: String,
     /// Transient: the link popup.
     link_popup_open: bool,
+    /// Transient: a pending request to focus the sidebar search field.
+    focus_search: bool,
+    calendar_year: i32,
+    calendar_month: u32,
+    calendar_day: Option<u32>,
+    edit_mode: bool,
 }
 
 impl ChainNotesApp {
@@ -52,15 +86,22 @@ impl ChainNotesApp {
             save_mode,
             first_run,
         } = boot(&store);
+        let today = calendar::from_unix_seconds(crate::note::now_secs());
         Self {
             notes: ChainNotes::from_record(record, status),
             saver: AutoSaver::new(store, save_mode, first_run),
             search: String::new(),
             link_popup_open: false,
+            focus_search: false,
+            calendar_year: today.year,
+            calendar_month: today.month,
+            calendar_day: Some(today.day),
+            edit_mode: false,
         }
     }
 
     fn in_memory() -> Self {
+        let today = calendar::from_unix_seconds(crate::note::now_secs());
         Self {
             notes: ChainNotes::from_record(WorkspaceRecord::demo(), msg::READY.to_owned()),
             saver: AutoSaver::new(
@@ -70,6 +111,11 @@ impl ChainNotesApp {
             ),
             search: String::new(),
             link_popup_open: false,
+            focus_search: false,
+            calendar_year: today.year,
+            calendar_month: today.month,
+            calendar_day: Some(today.day),
+            edit_mode: false,
         }
     }
 
@@ -106,9 +152,20 @@ impl ChainNotesApp {
                 }
                 None
             }
-            Command::NoteEdited => {
-                self.notes.touch_selected();
-                self.saver.touch();
+            Command::NoteEdited { id, title, body } => {
+                if self.notes.edit_note(id, title, body) {
+                    self.saver.touch();
+                }
+                None
+            }
+            Command::ForceSave => {
+                if let Some(Err(e)) = self.saver.flush(&self.notes) {
+                    self.notes.status = e.sentence();
+                }
+                None
+            }
+            Command::FocusSearch => {
+                self.focus_search = true;
                 None
             }
             Command::About => {
@@ -134,12 +191,41 @@ impl ChainNotesApp {
                 notes: &mut self.notes,
                 search: &mut self.search,
                 link_popup_open: &mut self.link_popup_open,
+                focus_search: &mut self.focus_search,
+                calendar_year: &mut self.calendar_year,
+                calendar_month: &mut self.calendar_month,
+                calendar_day: &mut self.calendar_day,
+                edit_mode: &mut self.edit_mode,
                 pending: &mut pending,
             };
             f(ui, &mut ctx);
         }
         for cmd in pending {
             self.handle(cmd);
+        }
+    }
+
+    fn export_active_note(&mut self) {
+        let Some(id) = self.notes.selected else {
+            self.notes.status = msg::SELECT_OR_CREATE.to_owned();
+            return;
+        };
+        let Some(note) = self.notes.notes.iter().find(|note| note.id == id).cloned() else {
+            self.notes.status = msg::SELECT_OR_CREATE.to_owned();
+            return;
+        };
+        let default_name = format!("note-{id}.pdf");
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PDF document", &["pdf"])
+            .set_file_name(default_name)
+            .save_file()
+        else {
+            self.notes.status = msg::EXPORT_CANCELLED.to_owned();
+            return;
+        };
+        match crate::export::export_note(&path, &note) {
+            Ok(()) => self.notes.status = msg::exported(path.display()),
+            Err(error) => self.notes.status = msg::export_failed(error),
         }
     }
 }
@@ -206,6 +292,27 @@ impl eframe::App for ChainNotesApp {
             self.notes.status = e.sentence();
         }
 
+        // Keep the shortcuts in one table, and let egui consume them so a
+        // keypress cannot trigger twice. Text-edit focus owns the keyboard;
+        // this prevents Ctrl/Cmd shortcuts from deleting or creating notes
+        // while the user is typing.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            let action = ui.ctx().input_mut(|input| {
+                SHORTCUTS.iter().find_map(|(shortcut, action)| {
+                    input.consume_shortcut(shortcut).then_some(*action)
+                })
+            });
+            if let Some(action) = action {
+                let command = match action {
+                    ShortcutAction::NewNote => Command::NewNote,
+                    ShortcutAction::ForceSave => Command::ForceSave,
+                    ShortcutAction::DeleteSelected => Command::DeleteSelected,
+                    ShortcutAction::FocusSearch => Command::FocusSearch,
+                };
+                self.handle(command);
+            }
+        }
+
         egui::Panel::top("menu").resizable(false).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -225,6 +332,10 @@ impl eframe::App for ChainNotesApp {
                     if ui.button("Quit").clicked() {
                         self.handle(Command::Quit);
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        ui.close();
+                    }
+                    if ui.button("Export active note as PDF…").clicked() {
+                        self.export_active_note();
                         ui.close();
                     }
                 });
@@ -256,7 +367,13 @@ impl eframe::App for ChainNotesApp {
         egui::Panel::right("chains")
             .resizable(true)
             .default_size(200.0)
-            .show(ui, |ui| self.panel(ui, ui::chains));
+            .show(ui, |ui| {
+                self.panel(ui, |ui, ctx| {
+                    ui::chains(ui, ctx);
+                    ui.separator();
+                    ui::calendar(ui, ctx);
+                });
+            });
 
         egui::CentralPanel::default().show(ui, |ui| self.panel(ui, ui::editor));
     }
@@ -421,5 +538,30 @@ mod tests {
         app.handle(Command::About);
         assert_eq!(app.notes.status, msg::ABOUT);
         assert!(!app.saver.is_dirty(), "view-only commands need no save");
+    }
+
+    #[test]
+    fn shortcut_table_contains_the_four_documented_actions() {
+        assert_eq!(SHORTCUTS.len(), 4);
+        assert!(
+            SHORTCUTS
+                .iter()
+                .any(|(_, a)| matches!(a, ShortcutAction::NewNote))
+        );
+        assert!(
+            SHORTCUTS
+                .iter()
+                .any(|(_, a)| matches!(a, ShortcutAction::ForceSave))
+        );
+        assert!(
+            SHORTCUTS
+                .iter()
+                .any(|(_, a)| matches!(a, ShortcutAction::DeleteSelected))
+        );
+        assert!(
+            SHORTCUTS
+                .iter()
+                .any(|(_, a)| matches!(a, ShortcutAction::FocusSearch))
+        );
     }
 }
